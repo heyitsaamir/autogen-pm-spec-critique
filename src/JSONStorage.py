@@ -11,6 +11,11 @@ class DatetimeEncoder(json.JSONEncoder):
             return str(obj)
 
 class JSONStorage(MemoryStorage):
+    """[summary]
+    Basically same as `MemoryStorage` but writes to a JSON file
+    which allows the the state to be persisted across restarts
+    In a real world setting, this would be in a database or blob storage
+    """
     def __init__(self, location = './json_storage.json'):
         super(JSONStorage, self).__init__()
         self.location = location
