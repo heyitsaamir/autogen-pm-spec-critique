@@ -100,7 +100,7 @@ app = Application[AppTurnState](
         bot_app_id=config.APP_ID,
         storage=storage,
         adapter=TeamsAdapter(config),
-        ai=AIOptions(planner=AutoGenPlanner(llm_config=llm_config, buildConversableAgents=build_group_chat)),
+        ai=AIOptions(planner=AutoGenPlanner(llm_config=llm_config, build_group_chat=build_group_chat)),
     ),
 )
 

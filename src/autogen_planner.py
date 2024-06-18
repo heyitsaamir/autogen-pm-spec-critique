@@ -13,9 +13,9 @@ nest_asyncio.apply()
 
 
 class AutoGenPlanner(Planner):
-    def __init__(self, llm_config, buildConversableAgents: Callable[[TurnContext, AppTurnState, List[Agent]], GroupChat]) -> None:
+    def __init__(self, llm_config, build_group_chat: Callable[[TurnContext, AppTurnState, List[Agent]], GroupChat]) -> None:
         self.llm_config = llm_config
-        self.buildConversableAgents = buildConversableAgents
+        self.build_group_chat = build_group_chat
         super().__init__()
 
     async def begin_task(self, context, state: AppTurnState):
@@ -28,7 +28,7 @@ class AutoGenPlanner(Planner):
             llm_config=self.llm_config
         )
 
-        groupchat = self.buildConversableAgents(context, state, [user_proxy])
+        groupchat = self.build_group_chat(context, state, [user_proxy])
         if state.conversation.is_waiting_for_user_input and state.conversation.started_waiting_for_user_input_at is not None:
             # if the user has not responded in 2 minutes
             if (datetime.now() - state.conversation.started_waiting_for_user_input_at).total_seconds() > 2 * 60:
