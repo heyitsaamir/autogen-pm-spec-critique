@@ -16,6 +16,9 @@ class TeamsUserProxy(ConversableAgent):
         is_question = True
         question = None
         if last_message is not None:
+            ## If you want a smarter check for whether the last message is a question, you can use the following code,
+            ## but by default, we can assume that all messages to the user are questions (in this example)
+            
             # messages = [{"role": "assistant", "content": last_message}]
             # messages.append({
             #     "role": "user",

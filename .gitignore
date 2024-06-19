@@ -12,3 +12,5 @@ appPackage/build
 
 # pylance
 **/__pycache__/
+
+.cache/

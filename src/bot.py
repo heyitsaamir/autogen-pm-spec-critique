@@ -8,21 +8,15 @@ Description: initialize the app and listen for `message` activitys
 import os
 import sys
 import traceback
-from typing import Dict, Any, Tuple, Annotated, List, Union
+from typing import Union
 from autogen import AssistantAgent, GroupChat, Agent
 from botbuilder.schema import Activity, ActivityTypes
 
-llm_config = {"model": "gpt-4o", "api_key": os.environ["OPENAI_KEY"]}
-
-from botbuilder.core import TurnContext
+from botbuilder.core import TurnContext, MemoryStorage
 from teams import Application, ApplicationOptions, TeamsAdapter
 from teams.ai import AIOptions
 from teams.ai.actions import ActionTypes, ActionTurnContext
-from teams.ai.models.openai_model import OpenAIModel, OpenAIModelOptions
 from autogen_planner import AutoGenPlanner, PredictedSayCommandWithAttachments
-from JSONStorage import JSONStorage
-import nest_asyncio
-nest_asyncio.apply()
 
 from config import Config
 from state import AppTurnState
@@ -34,6 +28,8 @@ if config.OPENAI_KEY is None and config.AZURE_OPENAI_KEY is None:
         "Missing environment variables - please check that OPENAI_KEY or AZURE_OPENAI_KEY is set."
     )
 
+
+llm_config = {"model": "gpt-4o", "api_key": os.environ["OPENAI_KEY"]}
 # downloads the file and returns the contents in a string
 def download_file_and_return_contents(download_url):
     import requests
@@ -41,7 +37,7 @@ def download_file_and_return_contents(download_url):
     return response.text
     
 
-storage = JSONStorage()
+storage = MemoryStorage()
 
 pm_spec_criteria = f"""
 1. Clear identification of the audience 
@@ -53,25 +49,21 @@ pm_spec_criteria = f"""
 7. Clear identification of the call to action. 
 """
 def build_group_chat(context: TurnContext, state: AppTurnState, user_agent: Agent):
+    ## If the spec is sent as a md file, we can use that too
     spec_url = state.conversation.spec_url
-    if spec_url is None:
-        if context.activity.attachments:
-            first_attachment = context.activity.attachments[0]
-            content = first_attachment.content
+    if spec_url is None and context.activity.attachments:
+        first_attachment = context.activity.attachments[0]
+        content = first_attachment.content
+        if isinstance(content, dict):
             content_type = content.get('fileType')
             if content_type == "md":
                 download_url = content.get('downloadUrl')
                 state.conversation.spec_url = download_url
                 spec_url = download_url
-            else:
-                return None
-            
-    if spec_url is None:
-        return None
     
     def read_spec() -> str:
         # this would probably be RAG in production
-        return  download_file_and_return_contents(download_url)
+        return  download_file_and_return_contents(spec_url)
         
     group_chat_agents = [user_agent]
     questioner_agent = AssistantAgent(
@@ -100,10 +92,11 @@ def build_group_chat(context: TurnContext, state: AppTurnState, user_agent: Agen
         """,
         llm_config={"config_list": [llm_config], "timeout": 60, "temperature": 0},
     )
-    d_retrieve_content = answerer_agent.register_for_llm(
-        description="retrieve the contents of the product spec", api_style="function"
-    )(read_spec)
-    answerer_agent.register_for_execution()(d_retrieve_content)
+    if spec_url:
+        d_retrieve_content = answerer_agent.register_for_llm(
+            description="Retrieve the contents of the product spec", api_style="function"
+        )(read_spec)
+        answerer_agent.register_for_execution()(d_retrieve_content)
     
     answer_evaluator_agent = AssistantAgent(
         name="Overall_spec_evaluator",
