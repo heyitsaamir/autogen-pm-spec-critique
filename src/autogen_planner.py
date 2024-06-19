@@ -2,18 +2,28 @@ from botbuilder.schema import Attachment
 from botbuilder.core import CardFactory, TurnContext
 from teams.ai.prompts import Message
 from teams.ai.planners import Planner, Plan, PredictedSayCommand
-from autogen import Agent, ConversableAgent, GroupChat, GroupChatManager, ChatResult
+from autogen import Agent, GroupChat, GroupChatManager, ChatResult
 from autogen.agentchat.agent import Agent
 import nest_asyncio
 from state import AppTurnState
-from typing import List, Callable
+from typing import List, Callable, Optional
 from teams_user_proxy import TeamsUserProxy
 from datetime import datetime
 nest_asyncio.apply()
+from dataclasses import dataclass
+from dataclasses_json import dataclass_json
+
+@dataclass_json
+@dataclass
+class MessageWithAttachments(Message):
+    attachments: Optional[List[Attachment]] = None
+
+class PredictedSayCommandWithAttachments(PredictedSayCommand):
+    response: MessageWithAttachments
 
 
 class AutoGenPlanner(Planner):
-    def __init__(self, llm_config, build_group_chat: Callable[[TurnContext, AppTurnState, List[Agent]], GroupChat]) -> None:
+    def __init__(self, llm_config, build_group_chat: Callable[[TurnContext, AppTurnState, Agent], GroupChat | None]) -> None:
         self.llm_config = llm_config
         self.build_group_chat = build_group_chat
         super().__init__()
@@ -28,10 +38,16 @@ class AutoGenPlanner(Planner):
             llm_config=self.llm_config
         )
 
-        groupchat = self.build_group_chat(context, state, [user_proxy])
+        groupchat = self.build_group_chat(context, state, user_proxy)
+        if groupchat is None:
+            return Plan(commands=[])
+        
         if state.conversation.is_waiting_for_user_input and state.conversation.started_waiting_for_user_input_at is not None:
             # if the user has not responded in 2 minutes
-            if (datetime.now() - state.conversation.started_waiting_for_user_input_at).total_seconds() > 2 * 60:
+            started_waiting_for_user_input_at = state.conversation.started_waiting_for_user_input_at if isinstance(
+                state.conversation.started_waiting_for_user_input_at, datetime) else datetime.fromisoformat(
+                state.conversation.started_waiting_for_user_input_at)
+            if (datetime.now() - started_waiting_for_user_input_at).total_seconds() > 2 * 60:
                 state.conversation.is_waiting_for_user_input = False
                 state.conversation.started_waiting_for_user_input_at = None
 
@@ -61,12 +77,12 @@ class AutoGenPlanner(Planner):
         state.conversation.message_history = chat_result.chat_history
         return Plan(
             commands=[
-                PredictedSayCommand(
+                PredictedSayCommandWithAttachments(
                     'SAY', 
-                    Message(
+                    MessageWithAttachments(
                         'assistant', 
                         content=message, 
-                        # attachments=[create_chat_history_ac(chat_result)]
+                        attachments=[create_chat_history_ac(chat_result)]
                         )
                     )
                 ]

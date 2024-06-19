@@ -8,15 +8,18 @@ Description: initialize the app and listen for `message` activitys
 import os
 import sys
 import traceback
-from typing import Dict, Any, Tuple, Annotated, List
+from typing import Dict, Any, Tuple, Annotated, List, Union
 from autogen import AssistantAgent, GroupChat, Agent
+from botbuilder.schema import Activity, ActivityTypes
 
 llm_config = {"model": "gpt-4o", "api_key": os.environ["OPENAI_KEY"]}
 
 from botbuilder.core import TurnContext
 from teams import Application, ApplicationOptions, TeamsAdapter
 from teams.ai import AIOptions
-from autogen_planner import AutoGenPlanner
+from teams.ai.actions import ActionTypes, ActionTurnContext
+from teams.ai.models.openai_model import OpenAIModel, OpenAIModelOptions
+from autogen_planner import AutoGenPlanner, PredictedSayCommandWithAttachments
 from JSONStorage import JSONStorage
 import nest_asyncio
 nest_asyncio.apply()
@@ -31,69 +34,121 @@ if config.OPENAI_KEY is None and config.AZURE_OPENAI_KEY is None:
         "Missing environment variables - please check that OPENAI_KEY or AZURE_OPENAI_KEY is set."
     )
 
+# downloads the file and returns the contents in a string
+def download_file_and_return_contents(download_url):
+    import requests
+    response = requests.get(download_url)
+    return response.text
+    
 
 storage = JSONStorage()
 
-location_finder_assistant = AssistantAgent(
-    name="LocationFinder",
-    llm_config=llm_config,
-    system_message="You are a location finder.",
-)
-def find_lat_long(location: Annotated[str, "A string version of a location. It must be in city, state format"]) -> Annotated[Tuple[int, int], "A tuple of the latitude and longitude for the given location"]:
-    return (102, 204)
-location_finder_assistant.register_for_llm(name="find_lat_long", description="Find the latitude and longitude for a given string location")(find_lat_long)
-location_finder_assistant.register_for_execution('find_lat_long')(find_lat_long)
+pm_spec_criteria = f"""
+1. Clear identification of the audience 
+2. Clear identification of the problem 
+3. Clear identification of the solution 
+4. Clear identification of the value proposition 
+5. Clear identification of the competition 
+6. Clear identification of the unique selling proposition 
+7. Clear identification of the call to action. 
+"""
+def build_group_chat(context: TurnContext, state: AppTurnState, user_agent: Agent):
+    spec_url = state.conversation.spec_url
+    if spec_url is None:
+        if context.activity.attachments:
+            first_attachment = context.activity.attachments[0]
+            content = first_attachment.content
+            content_type = content.get('fileType')
+            if content_type == "md":
+                download_url = content.get('downloadUrl')
+                state.conversation.spec_url = download_url
+                spec_url = download_url
+            else:
+                return None
+            
+    if spec_url is None:
+        return None
+    
+    def read_spec() -> str:
+        # this would probably be RAG in production
+        return  download_file_and_return_contents(download_url)
+        
+    group_chat_agents = [user_agent]
+    questioner_agent = AssistantAgent(
+        name="Questioner",
+        system_message=f"""You are a questioner agent. 
+        Your role is to ask questions for product specs based on the these requirements: 
+        {pm_spec_criteria}
+        Ask a single question at a given time. 
+        If you do not have any more questions, say so.
+        
+        When asking the question, you should include the spec requirement that the question is trying to answer. For example:
+        <question> (for spec requirement 1)
+        
+        If you have no questions to ask, say "NO_QUESTIONS" and nothing else.
+        """,
+        llm_config={"config_list": [llm_config], "timeout": 60, "temperature": 0},
+    )
+    answerer_agent = AssistantAgent(
+        name="Answerer",
+        system_message=f"""You are an answerer agent. 
+        Your role is to answer questions based on the product specs requirements. 
+        If you do not understand something from the spec, you may ask a clarifying question. 
+        Answer the questions as clearly and concisely as possible.
+        
+        DO NOT under any circumstance answer a question that is not based on the provided spec.
+        """,
+        llm_config={"config_list": [llm_config], "timeout": 60, "temperature": 0},
+    )
+    d_retrieve_content = answerer_agent.register_for_llm(
+        description="retrieve the contents of the product spec", api_style="function"
+    )(read_spec)
+    answerer_agent.register_for_execution()(d_retrieve_content)
+    
+    answer_evaluator_agent = AssistantAgent(
+        name="Overall_spec_evaluator",
+        system_message=f"""You are an answer reviewer agent. 
+        Your role is to evaluate the answers given by the answerer agent.
+        You are only called if the Questioner agent has no more questions to ask. 
+        Provide details on the quality of the specs based on the answers given by the answerer agent.
+        Evaluate the answers based on the following spec criteria:
+        {pm_spec_criteria}
+        
+        Rate each area on a scale of 1 to 5 as well.
+        """,
+        llm_config={"config_list": [llm_config], "timeout": 60, "temperature": 0},
+    )
 
-weather_assistant = AssistantAgent(
-    name="WeatherAssistant",
-    llm_config=llm_config,
-    system_message="You are weather assistant. You are able to provide weather information for a user. You do not know how to find the latitude and longitude for a location. Do NOT predict the latitude and longitude for a location. Use evidence from the chat to determine the lat and long of a location",
-)
-def get_weather(lat: Annotated[int, "latitude for a location"], long: Annotated[int, "longitude for a location"]) -> Annotated[Dict[str, Any], "A json object containing weather information"]:
-    return {
-    "location": {
-        "city": "Renton, WA",
-        "country": "US",
-        "latitude": lat,
-        "longitude": long
-    },
-    "current_weather": {
-        "temperature": 20,
-        "humidity": 80,
-        "pressure": 1013,
-        "weather_description": "clear sky",
-        "wind_speed": 3.1,
-        "wind_direction": 210
-    },
-    "forecast": [
-        {
-            "date": "2022-12-01",
-            "temperature": 18,
-            "humidity": 70,
-            "pressure": 1012,
-            "weather_description": "few clouds",
-            "wind_speed": 3.5,
-            "wind_direction": 220
+    for agent in [questioner_agent, answerer_agent, answer_evaluator_agent]:
+        group_chat_agents.append(agent)
+        
+    def custom_speaker_selection_func(
+            last_speaker: Agent, groupchat: GroupChat
+        ) -> Union[Agent, str, None]:
+        if last_speaker == questioner_agent:
+            last_message = groupchat.messages[-1]
+            content = last_message.get("content")
+            if content is not None and content.lower() == "no_questions":
+                return answer_evaluator_agent
+            else:
+                return answerer_agent
+        return 'auto'
+            
+    
+    groupchat = GroupChat(
+        agents=group_chat_agents,
+        messages=[],
+        max_round=100,
+        speaker_selection_method=custom_speaker_selection_func,
+        allowed_or_disallowed_speaker_transitions={
+            user_agent: [questioner_agent],
+            questioner_agent: [answerer_agent, answer_evaluator_agent],
+            answerer_agent: [user_agent, questioner_agent],
+            answer_evaluator_agent: [user_agent]
         },
-        {
-            "date": "2022-12-02",
-            "temperature": 19,
-            "humidity": 75,
-            "pressure": 1011,
-            "weather_description": "scattered clouds",
-            "wind_speed": 3.2,
-            "wind_direction": 230
-        }
-    ]
-}
-weather_assistant.register_for_llm(name='get_weather', description='Get the weather information for a given location.')(get_weather)
-weather_assistant.register_for_execution('get_weather')(get_weather)
-
-def build_group_chat(context: TurnContext, state: AppTurnState, agents: List[Agent]):
-    group_chat_agents = agents.copy()
-    group_chat_agents.append(location_finder_assistant)
-    group_chat_agents.append(weather_assistant)
-    return GroupChat(messages=[], agents=group_chat_agents)
+        speaker_transitions_type="allowed"
+    )
+    return groupchat
     
 app = Application[AppTurnState](
     ApplicationOptions(
@@ -103,6 +158,43 @@ app = Application[AppTurnState](
         ai=AIOptions(planner=AutoGenPlanner(llm_config=llm_config, build_group_chat=build_group_chat)),
     ),
 )
+
+@app.ai.action(ActionTypes.SAY_COMMAND)
+async def say_command(context: ActionTurnContext[PredictedSayCommandWithAttachments], state: AppTurnState):
+    content = (
+        context.data.response.content
+        if context.data.response and context.data.response.content
+        else ""
+    )
+    
+    if content:
+        await context.send_activity(
+            Activity(
+                type=ActivityTypes.message,
+                text=content,
+                attachments=context.data.response.attachments,
+                entities=[
+                    {
+                        "type": "https://schema.org/Message",
+                        "@type": "Message",
+                        "@context": "https://schema.org",
+                        "@id": "",
+                        "additionalType": ["AIGeneratedContent"],
+                    }
+                ],
+            )
+        )
+
+    return ""
+
+@app.message("/clear")
+async def on_login(context: TurnContext, state: AppTurnState):
+    await state.conversation.clear(context)
+    await context.send_activity("Cleared and ready to analyze next spec")
+    
+    return True
+
+
 
 @app.turn_state_factory
 async def turn_state_factory(context: TurnContext):

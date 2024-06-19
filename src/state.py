@@ -13,7 +13,8 @@ from datetime import datetime
 class AppConversationState(ConversationState):
     message_history: List[Dict] | None = None
     is_waiting_for_user_input: bool = False
-    started_waiting_for_user_input_at: datetime | None = None
+    started_waiting_for_user_input_at: datetime | str | None = None
+    spec_url: str | None = None
 
     @classmethod
     async def load(
@@ -21,6 +22,12 @@ class AppConversationState(ConversationState):
     ) -> "AppConversationState":
         state = await super().load(context, storage)
         return cls(**state)
+    
+    async def clear(self, context: TurnContext) -> None:
+        self.is_waiting_for_user_input = False
+        self.started_waiting_for_user_input_at = None
+        self.spec_url = None
+        await self.save(context)
 
 
 class AppTurnState(TurnState[AppConversationState, UserState, TempState]):

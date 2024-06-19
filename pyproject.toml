@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "resume-interviewer"
+name = "spec-critique"
 version = "0.0.0"
-description = "Resume Interviewer"
+description = "Spec Critique"
 authors = ["Microsoft <teams@microsoft.com>"]
 readme = "README.md"
 packages = [

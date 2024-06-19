@@ -2,6 +2,7 @@ from copy import deepcopy
 from typing import Dict, List
 from botbuilder.core import MemoryStorage, StoreItem
 import json
+import datetime
 
 class DatetimeEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -9,6 +10,14 @@ class DatetimeEncoder(json.JSONEncoder):
             return super().default(obj)
         except TypeError:
             return str(obj)
+        
+def date_hook(json_dict):
+    for (key, value) in json_dict.items():
+        try:
+            json_dict[key] = datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+        except:
+            pass
+    return json_dict
 
 class JSONStorage(MemoryStorage):
     """[summary]
@@ -20,7 +29,7 @@ class JSONStorage(MemoryStorage):
         super(JSONStorage, self).__init__()
         self.location = location
         with open(self.location, 'r') as f:
-            self.memory = json.load(f)
+            self.memory = json.load(f, object_hook=date_hook)
         
     def write_to_file(self):
         # Convert the dictionary to a JSON string
